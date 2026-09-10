@@ -22,7 +22,18 @@ TAG="v${VERSION}"
 
 DIST_MNT="/mnt/d/share/game-capture-agent"
 DIST_WIN="D:\\share\\game-capture-agent"
-ISCC="/mnt/c/Program Files (x86)/Inno Setup 6/ISCC.exe"
+# Search common install locations (winget installs to AppData when no admin)
+ISCC=""
+for candidate in \
+    "/mnt/c/Program Files (x86)/Inno Setup 6/ISCC.exe" \
+    "/mnt/c/Program Files/Inno Setup 6/ISCC.exe" \
+    "/mnt/c/Users/$(cmd.exe /c "echo %USERNAME%" 2>/dev/null | tr -d '\r\n')/AppData/Local/Programs/Inno Setup 6/ISCC.exe"
+do
+    if [ -f "$candidate" ]; then
+        ISCC="$candidate"
+        break
+    fi
+done
 
 echo "=== Release ${TAG} ==="
 
