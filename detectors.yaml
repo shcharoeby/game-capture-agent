@@ -1,0 +1,26 @@
+# Конфигурация детекторов игровых событий для Heroes III
+# Координаты region задаются в пространстве 1280x720 и масштабируются к реальному разрешению
+# region: [x, y, w, h]
+
+detectors:
+  # Боевой экран — характерная полоска интерфейса боя вверху
+  - id: combat_start
+    method: template
+    region: [0, 0, 1280, 100]
+    template: templates/combat_bar.png
+    threshold: 0.85
+    cooldown_sec: 30
+
+  # Кнопка "Конец хода" — жёлтая кнопка в правом нижнем углу
+  - id: turn_end_button
+    method: pixel
+    region: [1150, 680, 100, 30]
+    color: [255, 200, 50]
+    tolerance: 20
+    cooldown_sec: 5
+
+  # Номер хода — OCR текстового поля
+  - id: turn_number
+    method: ocr
+    region: [600, 10, 80, 30]
+    cooldown_sec: 60
