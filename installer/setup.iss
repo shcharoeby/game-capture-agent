@@ -60,9 +60,10 @@ Source: "{#SourceDir}\ffmpeg.exe";        DestDir: "{app}"; Flags: ignoreversion
 ; The installer deliberately does NOT touch them.
 
 [Icons]
-Name: "{group}\{#MyAppName}";          Filename: "{app}\{#MyAppExeName}"
-Name: "{group}\Удалить {#MyAppName}";  Filename: "{uninstallexe}"
-Name: "{commondesktop}\{#MyAppName}";  Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+; {userprograms} and {userdesktop} — user's own Start Menu / desktop, no admin needed
+Name: "{userprograms}\{#MyAppName}";          Filename: "{app}\{#MyAppExeName}"
+Name: "{userprograms}\Удалить {#MyAppName}";  Filename: "{uninstallexe}"
+Name: "{userdesktop}\{#MyAppName}";           Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Запустить {#MyAppName}"; \
