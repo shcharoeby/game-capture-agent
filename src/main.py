@@ -1,6 +1,7 @@
 """Main application entry point — Game Capture Agent."""
 import sys
 import threading
+import time
 
 from PyQt6.QtWidgets import QApplication
 
@@ -56,6 +57,7 @@ class App:
         self._win_capture: WindowCapturePipe | None = None
         self._current_game: GameProcess | None = None
         self._startup_timer: threading.Timer | None = None
+        self._focus_lost_at: float | None = None
 
         self._qt_app = QApplication(sys.argv)
         self._qt_app.setQuitOnLastWindowClosed(False)
@@ -171,7 +173,9 @@ class App:
         if window_pid:
             try:
                 self._win_capture = WindowCapturePipe(
-                    pid=window_pid, fps=self._cfg.video["fps"]
+                    pid=window_pid,
+                    fps=self._cfg.video["fps"],
+                    on_focus_change=self._on_game_focus_change,
                 )
                 self._win_capture.start()
                 self._logger.log(
@@ -277,6 +281,19 @@ class App:
         self._process_monitor.start()
 
     # ------------------------------------------------------------------
+
+    def _on_game_focus_change(self, is_focused: bool) -> None:
+        """Called from the WindowCapturePipe thread on every focus transition."""
+        if not self._logger:
+            return
+        now = time.monotonic()
+        if is_focused:
+            away_sec = round(now - self._focus_lost_at, 1) if self._focus_lost_at is not None else 0.0
+            self._logger.log("focus_gained", away_sec=away_sec)
+            self._focus_lost_at = None
+        else:
+            self._focus_lost_at = now
+            self._logger.log("focus_lost")
 
     def _check_update(self) -> None:
         info = check_for_update()

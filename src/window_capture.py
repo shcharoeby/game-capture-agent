@@ -15,6 +15,7 @@ import ctypes
 import ctypes.wintypes as wt
 import threading
 import time
+from typing import Callable
 
 
 # PrintWindow: capture hardware-accelerated / DirectX content, not just GDI
@@ -70,9 +71,15 @@ class WindowCapturePipe:
 
     PIPE_BASE = r"\\.\pipe\game_video_"
 
-    def __init__(self, pid: int, fps: int = 60) -> None:
+    def __init__(
+        self,
+        pid: int,
+        fps: int = 60,
+        on_focus_change: Callable[[bool], None] | None = None,
+    ) -> None:
         self._pid = pid
         self._fps = fps
+        self._on_focus_change = on_focus_change
         self.pipe_name = f"{self.PIPE_BASE}{pid}"
         self.width = 0
         self.height = 0
@@ -158,7 +165,21 @@ class WindowCapturePipe:
             next_tick = time.monotonic()
             written   = wt.DWORD(0)
 
+            # Focus tracking
+            _GetForegroundWindow = ctypes.windll.user32.GetForegroundWindow
+            _focused: bool | None = None   # unknown at start
+
             while not self._stop_event.is_set():
+                # Detect focus changes (cheap call, once per frame is fine)
+                if self._on_focus_change is not None:
+                    is_focused = (_GetForegroundWindow() == hwnd)
+                    if is_focused != _focused:
+                        _focused = is_focused
+                        try:
+                            self._on_focus_change(is_focused)
+                        except Exception:
+                            pass
+
                 # Ask the window to render itself into mem_dc.
                 # PW_RENDERFULLCONTENT ensures DX surfaces are included.
                 ctypes.windll.user32.PrintWindow(hwnd, mem_dc, _PW_RENDERFULLCONTENT)
