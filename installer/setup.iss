@@ -56,10 +56,6 @@ Source: "{#SourceDir}\game-capture.exe";  DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\capture-debug.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\ffmpeg.exe";        DestDir: "{app}"; Flags: ignoreversion
 
-; Templates (screenshots for detectors) — add new files, keep existing
-Source: "{#SourceDir}\templates\*"; DestDir: "{app}\templates"; \
-        Flags: ignoreversion recursesubdirs createallsubdirs onlyifdoesntexist
-
 ; NOTE: config.yaml and logs are stored in %APPDATA%\GameCapture (managed by app itself)
 ; The installer deliberately does NOT touch them.
 

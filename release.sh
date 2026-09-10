@@ -73,7 +73,7 @@ FFM_SIZE=$(stat -c%s "$DIST_MNT/ffmpeg.exe")
 # 4. Generate version.json
 # ---------------------------------------------------------------------------
 echo "--- Generating version.json ---"
-CHANGELOG_ESC=$(echo "$CHANGELOG" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read().strip()))")
+CHANGELOG_ESC=$(echo "$CHANGELOG" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read().strip(), ensure_ascii=False))")
 
 cat > "$DIST_MNT/version.json" <<EOF
 {
