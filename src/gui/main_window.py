@@ -5,6 +5,7 @@ from typing import Callable
 from PyQt6.QtCore import QTimer, Qt, pyqtSignal, QObject
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
+    QApplication,
     QComboBox,
     QFrame,
     QHBoxLayout,
@@ -31,10 +32,12 @@ class _Signals(QObject):
     event_logged = pyqtSignal(dict)              # event record
     game_status_changed = pyqtSignal(str, bool)  # (label, found)
     stream_status_changed = pyqtSignal(bool)     # is_live
+    recording_status_changed = pyqtSignal(bool)  # is_recording
     update_available = pyqtSignal(str, str)      # (version, changelog)
     update_progress = pyqtSignal(int, int)       # (downloaded, total)
     update_ready = pyqtSignal()
     update_error = pyqtSignal(str)
+    check_update_done = pyqtSignal(bool)         # found_update
 
 
 class _StatusIndicator(QWidget):
@@ -78,16 +81,26 @@ class MainWindow(QMainWindow):
         config: Config,
         on_start_stream: Callable[[], None] | None = None,
         on_stop_stream: Callable[[], None] | None = None,
+        on_start_recording: Callable[[], None] | None = None,
+        on_stop_recording: Callable[[], None] | None = None,
+        on_open_recordings_folder: Callable[[], None] | None = None,
         on_settings_saved: Callable[[], None] | None = None,
         on_game_changed: Callable[[str], None] | None = None,
+        on_channel_changed: Callable[[str], None] | None = None,
+        on_check_update: Callable[[], None] | None = None,
         on_quit: Callable[[], None] | None = None,
     ):
         super().__init__()
         self._config = config
         self._on_start_stream = on_start_stream
         self._on_stop_stream = on_stop_stream
+        self._on_start_recording = on_start_recording
+        self._on_stop_recording = on_stop_recording
+        self._on_open_recordings_folder = on_open_recordings_folder
         self._on_settings_saved = on_settings_saved
         self._on_game_changed = on_game_changed
+        self._on_channel_changed = on_channel_changed
+        self._on_check_update = on_check_update
         self._on_quit = on_quit
 
         self._signals = _Signals()
@@ -95,15 +108,19 @@ class MainWindow(QMainWindow):
         self._signals.event_logged.connect(self._on_event)
         self._signals.game_status_changed.connect(self._on_game_status)
         self._signals.stream_status_changed.connect(self._on_stream_status)
+        self._signals.recording_status_changed.connect(self._on_recording_status)
         self._signals.update_available.connect(self._on_update_available)
         self._signals.update_progress.connect(self._on_update_progress)
         self._signals.update_ready.connect(self._on_update_ready)
         self._signals.update_error.connect(self._on_update_error)
+        self._signals.check_update_done.connect(self._on_check_update_done)
 
         self._updater = None   # set by notify_update_available → download
 
         self._is_live = False
+        self._is_recording = False
         self._stream_start_mono: float | None = None
+        self._record_start_mono: float | None = None
         self._pulse_on = True
 
         self._build_ui()
@@ -125,6 +142,9 @@ class MainWindow(QMainWindow):
     def notify_stream_status(self, is_live: bool) -> None:
         self._signals.stream_status_changed.emit(is_live)
 
+    def notify_recording_status(self, is_recording: bool) -> None:
+        self._signals.recording_status_changed.emit(is_recording)
+
     def notify_update_available(self, info) -> None:
         """Called from background thread when a new version is found."""
         self._signals.update_available.emit(info.version, info.changelog)
@@ -138,6 +158,9 @@ class MainWindow(QMainWindow):
 
     def notify_update_error(self, msg: str) -> None:
         self._signals.update_error.emit(msg)
+
+    def notify_check_update_done(self, found: bool) -> None:
+        self._signals.check_update_done.emit(found)
 
     # ------------------------------------------------------------------
     # UI construction
@@ -175,6 +198,9 @@ class MainWindow(QMainWindow):
 
         self._stream_indicator = _StatusIndicator("Не активен")
         layout.addWidget(self._build_label_row("Стрим:", self._stream_indicator))
+
+        self._record_indicator = _StatusIndicator("Не активна")
+        layout.addWidget(self._build_label_row("Запись:", self._record_indicator))
 
         # Buffer progress bar
         buf_row = QHBoxLayout()
@@ -243,6 +269,25 @@ class MainWindow(QMainWindow):
         self._btn_start.clicked.connect(self._toggle_stream)
         btn_row.addWidget(self._btn_start)
 
+        self._btn_record = QPushButton("⏺  Запись")
+        self._btn_record.setFixedHeight(36)
+        self._btn_record.clicked.connect(self._toggle_recording)
+        btn_row.addWidget(self._btn_record)
+
+        self._btn_open_folder = QPushButton("📁")
+        self._btn_open_folder.setFixedWidth(36)
+        self._btn_open_folder.setFixedHeight(36)
+        self._btn_open_folder.setToolTip("Открыть папку с записями")
+        self._btn_open_folder.clicked.connect(self._open_recordings_folder)
+        btn_row.addWidget(self._btn_open_folder)
+
+        self._btn_check_update = QPushButton("🔄")
+        self._btn_check_update.setFixedWidth(36)
+        self._btn_check_update.setFixedHeight(36)
+        self._btn_check_update.setToolTip("Проверить наличие обновлений")
+        self._btn_check_update.clicked.connect(self._trigger_check_update)
+        btn_row.addWidget(self._btn_check_update)
+
         btn_settings = QPushButton("⚙  Настройки")
         btn_settings.setFixedHeight(36)
         btn_settings.clicked.connect(self._open_settings)
@@ -251,7 +296,14 @@ class MainWindow(QMainWindow):
 
         # --- Event log ---
         layout.addWidget(self._make_separator())
-        layout.addWidget(QLabel("Последние события:"))
+        log_header = QHBoxLayout()
+        log_header.addWidget(QLabel("Последние события:"))
+        log_header.addStretch()
+        btn_copy_log = QPushButton("📋 Копировать")
+        btn_copy_log.setFixedHeight(22)
+        btn_copy_log.clicked.connect(self._copy_event_log)
+        log_header.addWidget(btn_copy_log)
+        layout.addLayout(log_header)
         self._event_log = QTextEdit()
         self._event_log.setReadOnly(True)
         self._event_log.setFixedHeight(120)
@@ -340,14 +392,20 @@ class MainWindow(QMainWindow):
         self._stream_indicator.set_active(color)
 
     def _update_uptime(self) -> None:
-        if self._stream_start_mono is None:
-            return
-        elapsed = int(time.monotonic() - self._stream_start_mono)
-        h = elapsed // 3600
-        m = (elapsed % 3600) // 60
-        s = elapsed % 60
-        br = getattr(self, "_last_bitrate", 0)
-        self._stream_indicator.set_label(f"LIVE  {h:02d}:{m:02d}:{s:02d}  {br} kbps")
+        now = time.monotonic()
+        if self._stream_start_mono is not None:
+            elapsed = int(now - self._stream_start_mono)
+            h = elapsed // 3600
+            m = (elapsed % 3600) // 60
+            s = elapsed % 60
+            br = getattr(self, "_last_bitrate", 0)
+            self._stream_indicator.set_label(f"LIVE  {h:02d}:{m:02d}:{s:02d}  {br} kbps")
+        if self._record_start_mono is not None:
+            elapsed = int(now - self._record_start_mono)
+            h = elapsed // 3600
+            m = (elapsed % 3600) // 60
+            s = elapsed % 60
+            self._record_indicator.set_label(f"REC  {h:02d}:{m:02d}:{s:02d}")
 
     # ------------------------------------------------------------------
     # Slot handlers
@@ -400,20 +458,38 @@ class MainWindow(QMainWindow):
         self._is_live = is_live
         if is_live:
             self._stream_start_mono = time.monotonic()
-            self._pulse_timer.start()
             self._uptime_timer.start()
+            self._pulse_timer.start()
             self._btn_start.setText("■  Остановить стрим")
             self._btn_start.setStyleSheet("background: #8b1a1a; color: white;")
             self._game_combo.setEnabled(False)
         else:
             self._stream_start_mono = None
             self._pulse_timer.stop()
-            self._uptime_timer.stop()
             self._stream_indicator.set_inactive()
             self._stream_indicator.set_label("Не активен")
             self._btn_start.setText("▶  Начать стрим")
             self._btn_start.setStyleSheet("")
             self._game_combo.setEnabled(True)
+            if not self._is_recording:
+                self._uptime_timer.stop()
+
+    def _on_recording_status(self, is_recording: bool) -> None:
+        self._is_recording = is_recording
+        if is_recording:
+            self._record_start_mono = time.monotonic()
+            self._uptime_timer.start()
+            self._record_indicator.set_active("#cc2222")
+            self._btn_record.setText("■  Стоп запись")
+            self._btn_record.setStyleSheet("background: #8b1a1a; color: white;")
+        else:
+            self._record_start_mono = None
+            self._record_indicator.set_inactive()
+            self._record_indicator.set_label("Не активна")
+            self._btn_record.setText("⏺  Запись")
+            self._btn_record.setStyleSheet("")
+            if not self._is_live:
+                self._uptime_timer.stop()
 
     # ------------------------------------------------------------------
     # Actions
@@ -445,8 +521,39 @@ class MainWindow(QMainWindow):
             if self._on_start_stream:
                 self._on_start_stream()
 
+    def _toggle_recording(self) -> None:
+        if self._is_recording:
+            if self._on_stop_recording:
+                self._on_stop_recording()
+        else:
+            if self._on_start_recording:
+                self._on_start_recording()
+
+    def _open_recordings_folder(self) -> None:
+        if self._on_open_recordings_folder:
+            self._on_open_recordings_folder()
+
+    def _trigger_check_update(self) -> None:
+        self._btn_check_update.setEnabled(False)
+        self._btn_check_update.setText("…")
+        if self._on_check_update:
+            self._on_check_update()
+
+    def _on_check_update_done(self, found: bool) -> None:
+        self._btn_check_update.setEnabled(True)
+        self._btn_check_update.setText("🔄")
+        if not found:
+            self._btn_check_update.setToolTip("Обновлений нет")
+            QTimer.singleShot(
+                3000,
+                lambda: self._btn_check_update.setToolTip("Проверить наличие обновлений"),
+            )
+
+    def _copy_event_log(self) -> None:
+        QApplication.clipboard().setText(self._event_log.toPlainText())
+
     def _open_settings(self) -> None:
-        dlg = SettingsWindow(self._config, parent=self)
+        dlg = SettingsWindow(self._config, on_channel_changed=self._on_channel_changed, parent=self)
         if dlg.exec():
             self._server_edit.setText(self._config.stream.get("host", ""))
             self._key_edit.setText(self._config.stream.get("key", ""))
@@ -519,11 +626,17 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def closeEvent(self, event):
-        if self._is_live:
+        if self._is_live or self._is_recording:
+            parts = []
+            if self._is_live:
+                parts.append("стрим")
+            if self._is_recording:
+                parts.append("запись")
+            what = " и ".join(parts)
             reply = QMessageBox.question(
                 self,
                 "Завершить?",
-                "Идёт стрим. Остановить стрим и выйти?",
+                f"Идёт {what}. Остановить и выйти?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )

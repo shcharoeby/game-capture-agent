@@ -2,17 +2,20 @@
 import subprocess
 import sys
 import threading
+from typing import Callable
 
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QRadioButton,
     QSpinBox,
@@ -57,9 +60,15 @@ def _list_audio_devices(ffmpeg_path: str = "ffmpeg") -> list[str]:
 
 
 class SettingsWindow(QDialog):
-    def __init__(self, config: Config, parent=None):
+    def __init__(
+        self,
+        config: Config,
+        on_channel_changed: Callable[[str], None] | None = None,
+        parent=None,
+    ):
         super().__init__(parent)
         self._config = config
+        self._on_channel_changed = on_channel_changed
         self.setWindowTitle("Настройки")
         self.setMinimumWidth(860)
         self.setMinimumHeight(480)
@@ -150,11 +159,6 @@ class SettingsWindow(QDialog):
         self._process_names_edit = QLineEdit()
         self._process_names_edit.setPlaceholderText("heroes3.exe, MMH55.exe")
         game_form.addRow("Процессы:", self._process_names_edit)
-
-        self._startup_delay = QSpinBox()
-        self._startup_delay.setRange(0, 60)
-        self._startup_delay.setSuffix(" сек")
-        game_form.addRow("Задержка старта:", self._startup_delay)
         left.addWidget(game_box)
 
         left.addStretch()
@@ -245,6 +249,52 @@ class SettingsWindow(QDialog):
         aud_form.addRow("Битрейт (кбс):", self._audio_bitrate_combo)
         right.addWidget(aud_box)
 
+        # ---- RECORD ----
+        rec_box = QGroupBox("ЗАПИСЬ")
+        rec_form = QFormLayout(rec_box)
+
+        folder_row = QHBoxLayout()
+        self._record_folder_edit = QLineEdit()
+        self._record_folder_edit.setPlaceholderText("По умолчанию: папка AppData/recordings")
+        folder_row.addWidget(self._record_folder_edit)
+        btn_browse = QPushButton("...")
+        btn_browse.setFixedWidth(32)
+        btn_browse.setToolTip("Выбрать папку")
+        btn_browse.clicked.connect(self._browse_record_folder)
+        folder_row.addWidget(btn_browse)
+        rec_form.addRow("Папка:", folder_row)
+
+        self._keyframe_spin = QSpinBox()
+        self._keyframe_spin.setRange(1, 10)
+        self._keyframe_spin.setSuffix(" сек")
+        rec_form.addRow("Ключевой кадр:", self._keyframe_spin)
+        right.addWidget(rec_box)
+
+        # ---- UPDATE CHANNEL ----
+        upd_box = QGroupBox("КАНАЛ ОБНОВЛЕНИЙ")
+        upd_layout = QVBoxLayout(upd_box)
+
+        ch_row = QHBoxLayout()
+        self._rb_stable = QRadioButton("Stable")
+        self._rb_dev = QRadioButton("Dev")
+        ch_row.addWidget(self._rb_stable)
+        ch_row.addWidget(self._rb_dev)
+        ch_row.addStretch()
+        upd_layout.addLayout(ch_row)
+
+        ch_hint = QLabel("Dev: получать pre-release сборки (нестабильные, для тестирования)")
+        ch_hint.setStyleSheet("color: #888; font-size: 10px;")
+        ch_hint.setWordWrap(True)
+        upd_layout.addWidget(ch_hint)
+
+        self._rb_stable.toggled.connect(
+            lambda checked: self._on_channel_radio(checked, "stable")
+        )
+        self._rb_dev.toggled.connect(
+            lambda checked: self._on_channel_radio(checked, "dev")
+        )
+        right.addWidget(upd_box)
+
         right.addStretch()
 
         # Populate devices after dialog is shown (non-blocking)
@@ -315,7 +365,14 @@ class SettingsWindow(QDialog):
         # Game
         names = cfg.game.get("process_names", [])
         self._process_names_edit.setText(", ".join(names))
-        self._startup_delay.setValue(cfg.game.get("startup_delay_sec", 5))
+
+        # Record
+        self._record_folder_edit.setText(cfg.get("record", "folder", default=""))
+        self._keyframe_spin.setValue(cfg.get("record", "keyframe_interval_sec", default=2))
+
+        # Update channel
+        channel = cfg.get("update", "channel", default="stable")
+        (self._rb_dev if channel == "dev" else self._rb_stable).setChecked(True)
 
     def _save(self) -> None:
         cfg = self._config
@@ -352,10 +409,21 @@ class SettingsWindow(QDialog):
         raw = self._process_names_edit.text()
         names = [n.strip() for n in raw.split(",") if n.strip()]
         cfg.set("game", "process_names", names)
-        cfg.set("game", "startup_delay_sec", self._startup_delay.value())
+
+        # Record
+        cfg.set("record", "folder", self._record_folder_edit.text().strip())
+        cfg.set("record", "keyframe_interval_sec", self._keyframe_spin.value())
+
+        # Update channel
+        new_channel = "dev" if self._rb_dev.isChecked() else "stable"
+        old_channel = cfg.get("update", "channel", default="stable")
+        cfg.set("update", "channel", new_channel)
 
         cfg.save()
         self.accept()
+
+        if new_channel != old_channel and self._on_channel_changed:
+            self._on_channel_changed(new_channel)
 
     def _refresh_audio_devices_async(self) -> None:
         """Start background thread to list audio devices without blocking the UI."""
@@ -392,4 +460,47 @@ class SettingsWindow(QDialog):
         self._key_edit.setEchoMode(
             QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password
         )
+
+    def _browse_record_folder(self) -> None:
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Выберите папку для записей",
+            self._record_folder_edit.text() or "",
+        )
+        if folder:
+            self._record_folder_edit.setText(folder)
+
+    def _on_channel_radio(self, checked: bool, channel: str) -> None:
+        """Ask for confirmation when switching update channel; revert if user declines."""
+        if not checked:
+            return
+        current = self._config.get("update", "channel", default="stable")
+        if channel == current:
+            return  # nothing changed
+
+        if channel == "dev":
+            msg = (
+                "Переключиться на dev-канал?\n\n"
+                "Вы будете получать предварительные (нестабильные) сборки. "
+                "Ваша версия приложения может быть переустановлена."
+            )
+        else:
+            msg = (
+                "Переключиться на stable-канал?\n\n"
+                "Следующее обновление может установить более старую стабильную версию."
+            )
+
+        reply = QMessageBox.question(
+            self, "Смена канала обновлений", msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            # Revert radio to the currently saved channel
+            rb_to_restore = self._rb_stable if current == "stable" else self._rb_dev
+            self._rb_stable.blockSignals(True)
+            self._rb_dev.blockSignals(True)
+            rb_to_restore.setChecked(True)
+            self._rb_stable.blockSignals(False)
+            self._rb_dev.blockSignals(False)
 

@@ -3,9 +3,14 @@
 #define MyAppExeName   "game-capture.exe"
 #define MyAppId        "{{B3F2A1D4-9C7E-4B3A-8F2D-1E6A5C3B0D9F}"
 
-; Version is injected by release.sh:  /DMyAppVersion=1.2.3
+; Version is injected by release.sh:  /DMyAppVersion=1.2.3-dev
 #ifndef MyAppVersion
   #define MyAppVersion "1.0.0"
+#endif
+
+; Numeric-only version for VersionInfoVersion (major.minor.patch), injected by release.sh
+#ifndef VersionInfoVersion
+  #define VersionInfoVersion "1.0.0"
 #endif
 
 ; Source directory (build output), injected by release.sh:  /DSourceDir=...
@@ -20,7 +25,7 @@ AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL=https://github.com/shcharoeby/game-capture-agent
 AppUpdatesURL=https://github.com/shcharoeby/game-capture-agent/releases
-VersionInfoVersion={#MyAppVersion}
+VersionInfoVersion={#VersionInfoVersion}
 
 ; Install to %LOCALAPPDATA%\Programs\GameCapture — no UAC needed
 DefaultDirName={localappdata}\Programs\GameCapture

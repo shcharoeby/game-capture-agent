@@ -1,7 +1,7 @@
 """JSONL event logger with abs/rel timestamps."""
 import json
 import threading
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -44,13 +44,13 @@ class EventLogger:
 
     def log(self, event: str, **kwargs: Any) -> dict:
         """Log an event and return the written record."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now().astimezone()  # local time with timezone offset
         rel = 0.0
         if self._stream_start is not None:
             rel = (now - self._stream_start).total_seconds()
 
         record: dict[str, Any] = {
-            "abs": now.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+            "abs": now.isoformat(timespec="milliseconds"),  # e.g. 2026-09-11T17:00:04.123+03:00
             "rel": round(rel, 3),
             "event": event,
         }
@@ -69,7 +69,7 @@ class EventLogger:
         return record
 
     def mark_stream_start(self, **kwargs: Any) -> dict:
-        self._stream_start = datetime.now(timezone.utc)
+        self._stream_start = datetime.now().astimezone()
         return self.log("stream_start", **kwargs)
 
     def mark_stream_end(self, **kwargs: Any) -> dict:

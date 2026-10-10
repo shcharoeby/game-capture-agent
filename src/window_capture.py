@@ -21,6 +21,13 @@ from typing import Callable
 # PrintWindow: capture hardware-accelerated / DirectX content, not just GDI
 _PW_RENDERFULLCONTENT = 0x00000002
 _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+_BLACKNESS            = 0x00000042  # PatBlt ternary raster op: fill with black
+
+_OVERLAY_TEXT = "Игрок вне окна"
+
+
+class _SIZE(ctypes.Structure):
+    _fields_ = [("cx", wt.LONG), ("cy", wt.LONG)]
 
 
 class _BITMAPINFOHEADER(ctypes.Structure):
@@ -146,6 +153,17 @@ class WindowCapturePipe:
 
         frame_buf = (ctypes.c_byte * (w * h * 4))()
 
+        # Font for the "focus lost" overlay — created once, deleted in finally.
+        # Height scaled to video: ~1/20 of frame height (≈54 px at 1080p).
+        _overlay_font = ctypes.windll.gdi32.CreateFontW(
+            max(28, h // 20), 0, 0, 0,
+            700,          # FW_BOLD
+            0, 0, 0,
+            1,            # DEFAULT_CHARSET
+            0, 0, 3, 0,   # quality=ANTIALIASED_QUALITY
+            "Arial",
+        )
+
         # ── Named pipe ────────────────────────────────────────────────────────
         # Large buffer (8 MB) to absorb frame bursts without stalling.
         pipe_h = ctypes.windll.kernel32.CreateNamedPipeW(
@@ -165,24 +183,78 @@ class WindowCapturePipe:
             next_tick = time.monotonic()
             written   = wt.DWORD(0)
 
-            # Focus tracking
+            # Focus tracking — always active (used for overlay + optional callback)
             _GetForegroundWindow = ctypes.windll.user32.GetForegroundWindow
-            _focused: bool | None = None   # unknown at start
+            # Grace period: brief focus losses (e.g. clicking the Record button) are
+            # ignored — overlay and callback only fire after 4 s of continuous absence.
+            _FOCUS_GRACE_SEC = 4.0
+            _focused: bool = True          # optimistic: assume game has focus at start
+            _focus_lost_at: float | None = None   # when focus was continuously lost
+            _focus_loss_fired: bool = False        # whether on_focus_change(False) fired
 
             while not self._stop_event.is_set():
-                # Detect focus changes (cheap call, once per frame is fine)
-                if self._on_focus_change is not None:
-                    is_focused = (_GetForegroundWindow() == hwnd)
-                    if is_focused != _focused:
-                        _focused = is_focused
-                        try:
-                            self._on_focus_change(is_focused)
-                        except Exception:
-                            pass
+                now = time.monotonic()
+                is_focused = (_GetForegroundWindow() == hwnd)
 
-                # Ask the window to render itself into mem_dc.
-                # PW_RENDERFULLCONTENT ensures DX surfaces are included.
-                ctypes.windll.user32.PrintWindow(hwnd, mem_dc, _PW_RENDERFULLCONTENT)
+                if is_focused:
+                    if not _focused:
+                        # Focus regained — cancel grace timer
+                        _focus_lost_at = None
+                        if _focus_loss_fired:
+                            _focus_loss_fired = False
+                            if self._on_focus_change is not None:
+                                try:
+                                    self._on_focus_change(True)
+                                except Exception:
+                                    pass
+                    _focused = True
+                else:
+                    if _focused:
+                        # Focus just lost — start grace timer
+                        _focus_lost_at = now
+                    _focused = False
+                    # Fire callback + show overlay only after grace period
+                    if (
+                        not _focus_loss_fired
+                        and _focus_lost_at is not None
+                        and now - _focus_lost_at >= _FOCUS_GRACE_SEC
+                    ):
+                        _focus_loss_fired = True
+                        if self._on_focus_change is not None:
+                            try:
+                                self._on_focus_change(False)
+                            except Exception:
+                                pass
+
+                _show_overlay = (
+                    not _focused
+                    and _focus_lost_at is not None
+                    and now - _focus_lost_at >= _FOCUS_GRACE_SEC
+                )
+                if _show_overlay:
+                    # ── Focus-lost overlay ──────────────────────────────────
+                    # Fill the DC with black, then draw centred overlay text.
+                    ctypes.windll.gdi32.PatBlt(mem_dc, 0, 0, w, h, _BLACKNESS)
+
+                    old_font = ctypes.windll.gdi32.SelectObject(mem_dc, _overlay_font)
+                    ctypes.windll.gdi32.SetBkMode(mem_dc, 1)        # TRANSPARENT
+                    ctypes.windll.gdi32.SetTextColor(mem_dc, 0x00FFFFFF)  # white (0xBBGGRR)
+
+                    sz = _SIZE()
+                    ctypes.windll.gdi32.GetTextExtentPoint32W(
+                        mem_dc, _OVERLAY_TEXT, len(_OVERLAY_TEXT), ctypes.byref(sz)
+                    )
+                    tx = max(0, (w - sz.cx) // 2)
+                    ty = max(0, (h - sz.cy) // 2)
+                    ctypes.windll.gdi32.TextOutW(
+                        mem_dc, tx, ty, _OVERLAY_TEXT, len(_OVERLAY_TEXT)
+                    )
+                    ctypes.windll.gdi32.SelectObject(mem_dc, old_font)
+                else:
+                    # ── Normal window capture ───────────────────────────────
+                    # Ask the window to render itself into mem_dc.
+                    # PW_RENDERFULLCONTENT ensures DX surfaces are included.
+                    ctypes.windll.user32.PrintWindow(hwnd, mem_dc, _PW_RENDERFULLCONTENT)
 
                 # Copy the bitmap pixels (top-down BGRx) into frame_buf.
                 ctypes.windll.gdi32.GetDIBits(
@@ -202,6 +274,7 @@ class WindowCapturePipe:
                 if delay > 0:
                     time.sleep(delay)
         finally:
+            ctypes.windll.gdi32.DeleteObject(_overlay_font)
             ctypes.windll.gdi32.DeleteObject(bitmap)
             ctypes.windll.gdi32.DeleteDC(mem_dc)
             ctypes.windll.kernel32.CloseHandle(pipe_h)

@@ -299,13 +299,13 @@ else:
         # ── Internal ──────────────────────────────────────────────────────────
 
         def _run(self) -> None:
-            # ActivateAudioInterfaceAsync MUST be called from an MTA thread.
-            # CoInitialize() creates STA → E_ILLEGAL_METHOD_CALL (0x8000000E).
-            # CoInitializeEx(NULL, COINIT_MULTITHREADED=0) → MTA.
-            _COINIT_MULTITHREADED = 0
-            coinit_hr = ctypes.windll.ole32.CoInitializeEx(None, _COINIT_MULTITHREADED)
-            # 0x00000000 = S_OK (MTA), 0x00000001 = S_FALSE (already MTA),
-            # 0x80010106 = RPC_E_CHANGED_MODE (thread already STA — shouldn't happen)
+            # ActivateAudioInterfaceAsync requires an STA thread with a COM message
+            # pump so Windows can marshal the completion callback back to our thread.
+            # COINIT_APARTMENTTHREADED (0x2) creates an STA apartment.
+            _COINIT_APARTMENTTHREADED = 0x2
+            coinit_hr = ctypes.windll.ole32.CoInitializeEx(None, _COINIT_APARTMENTTHREADED)
+            # 0x00000000 = S_OK (new STA), 0x00000001 = S_FALSE (already STA),
+            # 0x80010106 = RPC_E_CHANGED_MODE (already MTA — shouldn't happen here)
             try:
                 self._capture()
             except Exception as exc:
@@ -344,8 +344,33 @@ else:
             )
             # restype=HRESULT → ctypes auto-raises OSError on failure
 
-            if not handler.wait(5.0):
-                raise RuntimeError("ActivateCompleted callback timed out")
+            # Pump COM/window messages so Windows can marshal the completion
+            # callback back onto this STA thread (STA requires a message pump).
+            class _MSG(ctypes.Structure):
+                _fields_ = [
+                    ("hwnd",    wt.HWND),
+                    ("message", wt.UINT),
+                    ("wParam",  wt.WPARAM),
+                    ("lParam",  wt.LPARAM),
+                    ("time",    wt.DWORD),
+                    ("ptX",     wt.LONG),
+                    ("ptY",     wt.LONG),
+                ]
+            _PM_REMOVE  = 1
+            _peek = ctypes.windll.user32.PeekMessageW
+            _xlat = ctypes.windll.user32.TranslateMessage
+            _disp = ctypes.windll.user32.DispatchMessageW
+            msg = _MSG()
+            deadline = time.monotonic() + 5.0
+            while not handler._done.is_set():
+                if time.monotonic() > deadline:
+                    raise RuntimeError("ActivateCompleted callback timed out")
+                if _peek(ctypes.byref(msg), None, 0, 0, _PM_REMOVE):
+                    _xlat(ctypes.byref(msg))
+                    _disp(ctypes.byref(msg))
+                else:
+                    time.sleep(0.001)
+
             if handler._error:
                 raise RuntimeError(handler._error)
 

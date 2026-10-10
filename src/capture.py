@@ -54,6 +54,10 @@ class CaptureConfig:
     video_height: int = 0
     # FFmpeg binary path
     ffmpeg_path: str = "ffmpeg"
+    # Output control
+    stream_enabled: bool = True        # output to RTMP/SRT server
+    record_path: str = ""              # non-empty → also write local MP4
+    keyframe_interval_sec: int = 2     # -g = fps * interval
 
 
 def _build_ffmpeg_cmd(cfg: CaptureConfig, bitrate_kbps: int) -> list[str]:
@@ -139,7 +143,8 @@ def _build_ffmpeg_cmd(cfg: CaptureConfig, bitrate_kbps: int) -> list[str]:
         "-maxrate", f"{bitrate_kbps}k",
         "-bufsize", f"{bufsize}k",
         "-pix_fmt", "yuv420p",
-        "-g", str(cfg.fps * 2),  # keyframe every 2 seconds
+        "-g", str(cfg.fps * cfg.keyframe_interval_sec),
+        "-keyint_min", str(cfg.fps * cfg.keyframe_interval_sec),
     ]
 
     # ---- Audio encoding ----
@@ -157,14 +162,26 @@ def _build_ffmpeg_cmd(cfg: CaptureConfig, bitrate_kbps: int) -> list[str]:
 
     # ---- Output / stream URL ----
     if cfg.protocol == "rtmp":
-        url = f"rtmp://{cfg.host}:1935/live/{cfg.key}"
-        cmd += ["-f", "flv", url]
+        stream_url = f"rtmp://{cfg.host}:1935/live/{cfg.key}"
+        stream_fmt = "flv"
     else:
-        url = (
+        stream_url = (
             f"srt://{cfg.host}:8890"
             f"?streamid=publish:live/{cfg.key}&latency={cfg.srt_latency_ms}"
         )
-        cmd += ["-f", "mpegts", url]
+        stream_fmt = "mpegts"
+
+    if cfg.stream_enabled and cfg.record_path:
+        # Both: stream + local record via tee muxer (one encode, two outputs)
+        tee_url = (
+            f"[f={stream_fmt}:onfail=ignore]{stream_url}"
+            f"|[f=mp4:movflags=+faststart]{cfg.record_path}"
+        )
+        cmd += ["-f", "tee", tee_url]
+    elif cfg.stream_enabled:
+        cmd += ["-f", stream_fmt, stream_url]
+    elif cfg.record_path:
+        cmd += ["-f", "mp4", "-movflags", "+faststart", cfg.record_path]
 
     return cmd
 
@@ -261,6 +278,7 @@ class CaptureManager:
     def _launch_ffmpeg(self) -> None:
         cmd = _build_ffmpeg_cmd(self._cfg, self._current_bitrate)
         kwargs: dict = dict(
+            stdin=subprocess.PIPE,   # needed for graceful 'q' shutdown
             stderr=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
             text=True,
@@ -282,9 +300,18 @@ class CaptureManager:
     def _terminate_ffmpeg(self) -> None:
         proc = self._proc
         if proc and proc.poll() is None:
-            proc.terminate()
+            # Graceful shutdown: send 'q' to stdin so FFmpeg flushes the
+            # encoder and writes the moov atom before exiting.  Without this,
+            # TerminateProcess on Windows kills FFmpeg instantly and the MP4
+            # file ends up without a moov atom (unplayable, tiny file size).
+            grace_sec = 15.0 if self._cfg.record_path else 5.0
             try:
-                proc.wait(timeout=5)
+                proc.stdin.write("q")
+                proc.stdin.flush()
+            except Exception:
+                pass
+            try:
+                proc.wait(timeout=grace_sec)
             except subprocess.TimeoutExpired:
                 proc.kill()
         self._proc = None

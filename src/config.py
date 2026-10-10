@@ -85,13 +85,17 @@ DEFAULTS: dict[str, Any] = {
     },
     "game": {
         "selected": _DEFAULT_GAME,
-        "startup_delay_sec": 5,
     },
     "log": {
         "show_in_ui_last_n": 20,
     },
     "update": {
         "skipped_version": "",
+        "channel": "stable",
+    },
+    "record": {
+        "folder": "",           # empty = %APPDATA%\GameCapture\recordings
+        "keyframe_interval_sec": 2,
     },
 }
 

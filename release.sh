@@ -20,6 +20,12 @@ VERSION="${1:?Usage: ./release.sh <version> \"<changelog>\"}"
 CHANGELOG="${2:-Обновление}"
 TAG="v${VERSION}"
 
+# Pre-release flag: set automatically when version contains "-dev"
+PRERELEASE_FLAG=""
+if [[ "$VERSION" == *"-dev"* ]]; then
+    PRERELEASE_FLAG="--prerelease"
+fi
+
 DIST_MNT="/mnt/d/share/game-capture-agent"
 DIST_WIN="D:\\share\\game-capture-agent"
 # Search common install locations (winget installs to AppData when no admin)
@@ -95,8 +101,11 @@ cat "$DIST_MNT/version.json"
 # ---------------------------------------------------------------------------
 if [ -f "$ISCC" ]; then
     echo "--- Building installer with Inno Setup ---"
+    # VersionInfoVersion must be numeric-only (major.minor.patch); strip pre-release suffix
+    VERSION_NUMERIC="${VERSION%%-*}"
     "$ISCC" installer/setup.iss \
         "/DMyAppVersion=${VERSION}" \
+        "/DVersionInfoVersion=${VERSION_NUMERIC}" \
         "/DSourceDir=${DIST_WIN}"
     INSTALLER="$DIST_MNT/GameCapture-Setup-${VERSION}.exe"
     echo "Installer: $INSTALLER"
@@ -121,6 +130,7 @@ echo "--- Creating GitHub Release ${TAG} ---"
 gh release create "${TAG}" \
     --title "v${VERSION}" \
     --notes "${CHANGELOG}" \
+    ${PRERELEASE_FLAG} \
     "$DIST_MNT/version.json" \
     "$DIST_MNT/game-capture.exe" \
     "$DIST_MNT/capture-debug.exe" \
