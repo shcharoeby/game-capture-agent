@@ -120,7 +120,7 @@ fi
 # ---------------------------------------------------------------------------
 echo "--- Committing version bump ---"
 git add src/version.py
-git commit -m "chore: bump version to ${VERSION}"
+git diff --cached --quiet || git commit -m "chore: bump version to ${VERSION}"
 git push
 
 # ---------------------------------------------------------------------------
