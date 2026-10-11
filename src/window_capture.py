@@ -255,9 +255,21 @@ class WindowCapturePipe:
                     ctypes.windll.gdi32.SelectObject(mem_dc, old_font)
                 else:
                     # ── Normal window capture ───────────────────────────────
-                    # Ask the window to render itself into mem_dc.
-                    # PW_RENDERFULLCONTENT ensures DX surfaces are included.
-                    ctypes.windll.user32.PrintWindow(hwnd, mem_dc, _PW_RENDERFULLCONTENT)
+                    # Use screen-DC BitBlt at the window's client origin.
+                    # This captures whatever is on screen at that position and
+                    # works universally: GDI, DX9, DX11, DX12 (including
+                    # flip-model swap chains that return black from PrintWindow).
+                    # When the game is focused it is always visible, so this is safe.
+                    pt = wt.POINT(0, 0)
+                    ctypes.windll.user32.ClientToScreen(hwnd, ctypes.byref(pt))
+                    screen_dc = ctypes.windll.user32.GetDC(0)
+                    ok = ctypes.windll.gdi32.BitBlt(
+                        mem_dc, 0, 0, w, h, screen_dc, pt.x, pt.y, 0x00CC0020
+                    )  # SRCCOPY
+                    ctypes.windll.user32.ReleaseDC(0, screen_dc)
+                    if not ok:
+                        # Unlikely fallback: window may be minimised/invisible
+                        ctypes.windll.user32.PrintWindow(hwnd, mem_dc, _PW_RENDERFULLCONTENT)
 
                 # Copy the bitmap pixels (top-down BGRx) into frame_buf.
                 ctypes.windll.gdi32.GetDIBits(
