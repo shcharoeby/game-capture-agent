@@ -273,11 +273,17 @@ else:
             self._pipe_ready = threading.Event()
             self._thread: threading.Thread | None = None
             self._init_error: str | None = None
+            # Actual audio format — set by _capture() before _pipe_ready fires
+            self.sample_rate: int = 48000
+            self.channels: int = 2
 
         # ffmpeg args to consume this pipe as audio input
         @property
         def ffmpeg_audio_args(self) -> list[str]:
-            return ["-f", "f32le", "-ar", "48000", "-ac", "2", "-i", self.pipe_name]
+            return ["-f", "f32le",
+                    "-ar", str(self.sample_rate),
+                    "-ac", str(self.channels),
+                    "-i", self.pipe_name]
 
         def start(self) -> None:
             self._thread = threading.Thread(
@@ -299,13 +305,14 @@ else:
         # ── Internal ──────────────────────────────────────────────────────────
 
         def _run(self) -> None:
-            # ActivateAudioInterfaceAsync requires an STA thread with a COM message
-            # pump so Windows can marshal the completion callback back to our thread.
-            # COINIT_APARTMENTTHREADED (0x2) creates an STA apartment.
-            _COINIT_APARTMENTTHREADED = 0x2
-            coinit_hr = ctypes.windll.ole32.CoInitializeEx(None, _COINIT_APARTMENTTHREADED)
-            # 0x00000000 = S_OK (new STA), 0x00000001 = S_FALSE (already STA),
-            # 0x80010106 = RPC_E_CHANGED_MODE (already MTA — shouldn't happen here)
+            # ActivateAudioInterfaceAsync with PROCESS_LOOPBACK REQUIRES an MTA thread.
+            # Using STA (COINIT_APARTMENTTHREADED=0x2) returns E_ILLEGAL_METHOD_CALL.
+            # With MTA, the completion callback is delivered on any MTA thread in the
+            # process — no message pump is needed.
+            _COINIT_MULTITHREADED = 0x0
+            coinit_hr = ctypes.windll.ole32.CoInitializeEx(None, _COINIT_MULTITHREADED)
+            # 0x00000000 = S_OK (new MTA), 0x00000001 = S_FALSE (already MTA),
+            # 0x80010106 = RPC_E_CHANGED_MODE (already STA on this thread)
             try:
                 self._capture()
             except Exception as exc:
@@ -344,32 +351,9 @@ else:
             )
             # restype=HRESULT → ctypes auto-raises OSError on failure
 
-            # Pump COM/window messages so Windows can marshal the completion
-            # callback back onto this STA thread (STA requires a message pump).
-            class _MSG(ctypes.Structure):
-                _fields_ = [
-                    ("hwnd",    wt.HWND),
-                    ("message", wt.UINT),
-                    ("wParam",  wt.WPARAM),
-                    ("lParam",  wt.LPARAM),
-                    ("time",    wt.DWORD),
-                    ("ptX",     wt.LONG),
-                    ("ptY",     wt.LONG),
-                ]
-            _PM_REMOVE  = 1
-            _peek = ctypes.windll.user32.PeekMessageW
-            _xlat = ctypes.windll.user32.TranslateMessage
-            _disp = ctypes.windll.user32.DispatchMessageW
-            msg = _MSG()
-            deadline = time.monotonic() + 5.0
-            while not handler._done.is_set():
-                if time.monotonic() > deadline:
-                    raise RuntimeError("ActivateCompleted callback timed out")
-                if _peek(ctypes.byref(msg), None, 0, 0, _PM_REMOVE):
-                    _xlat(ctypes.byref(msg))
-                    _disp(ctypes.byref(msg))
-                else:
-                    time.sleep(0.001)
+            # MTA: callback is delivered on any MTA thread — no message pump needed.
+            if not handler._done.wait(5.0):
+                raise RuntimeError("ActivateCompleted callback timed out")
 
             if handler._error:
                 raise RuntimeError(handler._error)
@@ -384,6 +368,10 @@ else:
             sample_rate   = fmt.nSamplesPerSec
             n_channels    = fmt.nChannels
             bytes_per_frm = fmt.nBlockAlign
+
+            # Store actual format so callers can build correct FFmpeg args
+            self.sample_rate = sample_rate
+            self.channels    = n_channels
 
             # 3. Initialize in loopback shared mode
             audio_client.Initialize(

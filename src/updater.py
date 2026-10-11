@@ -31,7 +31,7 @@ REPO = "shcharoeby/game-capture-agent"
 _API_BASE = f"https://api.github.com/repos/{REPO}"
 _DL_BASE  = f"https://github.com/{REPO}/releases/download"
 
-_UPDATABLE_FILES = ["game-capture.exe", "capture-debug.exe", "ffmpeg.exe"]
+_UPDATABLE_FILES = ["game-capture.exe", "ffmpeg.exe"]
 
 
 @dataclass
@@ -235,7 +235,19 @@ class Updater:
     @staticmethod
     def _write_update_bat(install: Path) -> None:
         bat   = install / "update.bat"
-        lines = ["@echo off", "timeout /t 2 /nobreak >nul"]
+        # Wait up to 15s for game-capture.exe to fully exit (PyInstaller cleanup
+        # can take several seconds; 2s was too short and move silently failed).
+        lines = [
+            "@echo off",
+            "set /a attempts=0",
+            ":wait_loop",
+            "timeout /t 1 /nobreak >nul",
+            "set /a attempts+=1",
+            'tasklist /fi "imagename eq game-capture.exe" 2>nul | find /i "game-capture.exe" >nul',
+            "if not errorlevel 1 (",
+            "  if %attempts% lss 15 goto wait_loop",
+            ")",
+        ]
         for fname in _UPDATABLE_FILES:
             lines.append(f'if exist "{fname}.new" move /y "{fname}.new" "{fname}"')
         # Use explorer.exe to launch the updated app so that it persists as

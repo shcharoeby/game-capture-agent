@@ -39,6 +39,8 @@ class CaptureConfig:
     audio_bitrate_kbps: int = 192
     # Per-process audio pipe (set by ProcessAudioCapture; overrides dshow when non-empty)
     audio_pipe_name: str = ""
+    audio_pipe_sample_rate: int = 48000
+    audio_pipe_channels: int = 2
     # Buffer / adaptive
     max_buffer_sec: float = 30.0
     reduce_threshold_sec: float = 15.0
@@ -116,8 +118,15 @@ def _build_ffmpeg_cmd(cfg: CaptureConfig, bitrate_kbps: int) -> list[str]:
     # macOS: avfoundation virtual device
     audio_active = False
     if cfg.audio_pipe_name:
-        # Raw PCM float32 LE from our Python WASAPI capture thread
-        cmd += ["-f", "f32le", "-ar", "48000", "-ac", "2", "-i", cfg.audio_pipe_name]
+        # Raw PCM float32 LE from our Python WASAPI capture thread.
+        # Sample rate and channel count come from the actual mix format reported
+        # by WASAPI GetMixFormat — not hardcoded so 5.1/44100 etc. work correctly.
+        cmd += [
+            "-f", "f32le",
+            "-ar", str(cfg.audio_pipe_sample_rate),
+            "-ac", str(cfg.audio_pipe_channels),
+            "-i", cfg.audio_pipe_name,
+        ]
         audio_active = True
     elif cfg.audio_enabled and cfg.audio_device:
         if system == "Windows":

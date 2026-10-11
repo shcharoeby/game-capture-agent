@@ -26,6 +26,7 @@ a = Analysis(
         'PIL',
         'PIL.Image',
         'PIL.ImageDraw',
+        'PIL.ImageFont',
         'pymem',
         'comtypes',
         'comtypes.client',

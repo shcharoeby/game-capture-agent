@@ -1,4 +1,6 @@
 """Main application window."""
+import os
+import subprocess
 import time
 from typing import Callable
 
@@ -38,6 +40,7 @@ class _Signals(QObject):
     update_ready = pyqtSignal()
     update_error = pyqtSignal(str)
     check_update_done = pyqtSignal(bool)         # found_update
+    log_path_changed = pyqtSignal(str)           # current log file path
 
 
 class _StatusIndicator(QWidget):
@@ -114,8 +117,10 @@ class MainWindow(QMainWindow):
         self._signals.update_ready.connect(self._on_update_ready)
         self._signals.update_error.connect(self._on_update_error)
         self._signals.check_update_done.connect(self._on_check_update_done)
+        self._signals.log_path_changed.connect(self._on_log_path_changed)
 
         self._updater = None   # set by notify_update_available → download
+        self._current_log_path: str = ""
 
         self._is_live = False
         self._is_recording = False
@@ -161,6 +166,9 @@ class MainWindow(QMainWindow):
 
     def notify_check_update_done(self, found: bool) -> None:
         self._signals.check_update_done.emit(found)
+
+    def notify_log_path(self, path: str) -> None:
+        self._signals.log_path_changed.emit(path)
 
     # ------------------------------------------------------------------
     # UI construction
@@ -299,6 +307,11 @@ class MainWindow(QMainWindow):
         log_header = QHBoxLayout()
         log_header.addWidget(QLabel("Последние события:"))
         log_header.addStretch()
+        self._btn_open_log = QPushButton("📂 Логи")
+        self._btn_open_log.setFixedHeight(22)
+        self._btn_open_log.setToolTip("Открыть папку с логами")
+        self._btn_open_log.clicked.connect(self._open_log_folder)
+        log_header.addWidget(self._btn_open_log)
         btn_copy_log = QPushButton("📋 Копировать")
         btn_copy_log.setFixedHeight(22)
         btn_copy_log.clicked.connect(self._copy_event_log)
@@ -548,6 +561,21 @@ class MainWindow(QMainWindow):
                 3000,
                 lambda: self._btn_check_update.setToolTip("Проверить наличие обновлений"),
             )
+
+    def _on_log_path_changed(self, path: str) -> None:
+        self._current_log_path = path
+        self._btn_open_log.setToolTip(f"Открыть папку с логами\n{path}")
+
+    def _open_log_folder(self) -> None:
+        if self._current_log_path:
+            folder = os.path.dirname(self._current_log_path)
+        else:
+            folder = str(self._config.log_dir)
+        os.makedirs(folder, exist_ok=True)
+        try:
+            subprocess.Popen(["explorer", folder])
+        except Exception:
+            pass
 
     def _copy_event_log(self) -> None:
         QApplication.clipboard().setText(self._event_log.toPlainText())

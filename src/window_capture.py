@@ -1,5 +1,5 @@
 """
-Per-window video capture using Win32 PrintWindow API.
+Per-window video capture using Win32 PrintWindow API or Windows Graphics Capture API.
 
 PrintWindow(hwnd, dc, PW_RENDERFULLCONTENT=0x02) asks the window to render its
 client area into a GDI DC — independent of z-order and occlusion.  DirectX 9/10/11
@@ -293,3 +293,21 @@ class WindowCapturePipe:
             ctypes.windll.gdi32.DeleteObject(bitmap)
             ctypes.windll.gdi32.DeleteDC(mem_dc)
             ctypes.windll.kernel32.CloseHandle(pipe_h)
+
+
+def make_window_capture(
+    pid: int,
+    fps: int = 60,
+    on_focus_change=None,
+) -> "WindowCapturePipe":
+    """
+    Factory: return WgcCapturePipe on Win10 1903+ (build 18362+),
+    fall back to WindowCapturePipe if WGC is unavailable or fails to init.
+    """
+    try:
+        from src.wgc_capture import WgcCapturePipe, is_wgc_supported
+        if is_wgc_supported():
+            return WgcCapturePipe(pid, fps, on_focus_change)
+    except Exception:
+        pass
+    return WindowCapturePipe(pid, fps, on_focus_change)

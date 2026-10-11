@@ -17,7 +17,7 @@ from src.gui.tray import TrayIcon, TrayState
 from src.process_audio import ProcessAudioCapture, is_process_loopback_supported
 from src.process_monitor import GameProcess, ProcessMonitor, _get_window_title
 from src.updater import check_for_update
-from src.window_capture import WindowCapturePipe
+from src.window_capture import WindowCapturePipe, make_window_capture
 
 
 def _make_capture_config(
@@ -152,6 +152,23 @@ class App:
         if self._capture and self._capture.is_running:
             self._stop_stream(reason="user_stopped")
 
+    def _log_platform_info(self) -> None:
+        """Log platform diagnostics at the start of every session."""
+        if not self._logger:
+            return
+        try:
+            win_build = sys.getwindowsversion().build if sys.platform == "win32" else 0
+        except Exception:
+            win_build = 0
+        from src.wgc_capture import is_wgc_supported
+        self._logger.log(
+            "platform_info",
+            python=sys.version.split()[0],
+            windows_build=win_build,
+            wgc_supported=is_wgc_supported(),
+            process_loopback_supported=is_process_loopback_supported(),
+        )
+
     def _make_record_path(self) -> str:
         """Return a timestamped MP4 path in the configured recordings folder."""
         folder_cfg = self._cfg.get("record", "folder", default="")
@@ -174,7 +191,9 @@ class App:
         )
         # Wire up previously opened AV pipes
         if hasattr(self, "_pending_audio_pipe"):
-            cap_cfg.audio_pipe_name = self._pending_audio_pipe
+            cap_cfg.audio_pipe_name        = self._pending_audio_pipe
+            cap_cfg.audio_pipe_sample_rate = getattr(self, "_pending_audio_sample_rate", 48000)
+            cap_cfg.audio_pipe_channels    = getattr(self, "_pending_audio_channels", 2)
         if self._win_capture:
             cap_cfg.video_pipe_name = self._win_capture.pipe_name
             cap_cfg.video_width     = self._win_capture.width
@@ -202,18 +221,26 @@ class App:
             stream_key=self._cfg.stream.get("key", ""),
         )
         self._logger.add_listener(self._window.notify_event)
+        self._window.notify_log_path(str(self._logger.log_path))
+        self._log_platform_info()
 
-        # ── Per-window video capture (PrintWindow, z-order independent) ────────
+        # ── Per-window video capture ──────────────────────────────────────────
         if window_pid and not self._win_capture:
             try:
-                self._win_capture = WindowCapturePipe(
+                self._win_capture = make_window_capture(
                     pid=window_pid,
                     fps=self._cfg.video["fps"],
                     on_focus_change=self._on_game_focus_change,
                 )
                 self._win_capture.start()
+                capture_type = (
+                    "wgc" if type(self._win_capture).__name__ == "WgcCapturePipe"
+                    else "bitblt"
+                )
                 self._logger.log(
-                    "video_source", mode="window_capture",
+                    "video_source",
+                    mode="window_capture",
+                    capture_type=capture_type,
                     pid=window_pid,
                     size=f"{self._win_capture.width}x{self._win_capture.height}",
                 )
@@ -223,15 +250,31 @@ class App:
 
         # ── Per-process audio capture (Windows 10 2004+) ─────────────────────
         self._pending_audio_pipe = ""
+        self._pending_audio_sample_rate = 48000
+        self._pending_audio_channels = 2
         if window_pid and is_process_loopback_supported() and not self._proc_audio:
             try:
                 self._proc_audio = ProcessAudioCapture(pid=window_pid)
                 self._proc_audio.start()
                 self._pending_audio_pipe = self._proc_audio.pipe_name
-                self._logger.log("audio_source", mode="process_loopback", pid=window_pid)
+                self._pending_audio_sample_rate = self._proc_audio.sample_rate
+                self._pending_audio_channels = self._proc_audio.channels
+                self._logger.log(
+                    "audio_source", mode="process_loopback", pid=window_pid,
+                    sample_rate=self._proc_audio.sample_rate,
+                    channels=self._proc_audio.channels,
+                )
             except Exception as exc:
-                self._logger.log("audio_source", mode="fallback", reason=str(exc))
+                self._logger.log(
+                    "audio_source", mode="process_loopback_failed",
+                    pid=window_pid, error=str(exc),
+                )
                 self._proc_audio = None
+        elif not is_process_loopback_supported():
+            self._logger.log(
+                "audio_source", mode="process_loopback_unavailable",
+                reason="win10_2004_required",
+            )
 
         self._is_streaming = True
         self._launch_capture(window_title, window_pid)
@@ -299,10 +342,12 @@ class App:
                     stream_key=self._cfg.stream.get("key", ""),
                 )
                 self._logger.add_listener(self._window.notify_event)
+                self._window.notify_log_path(str(self._logger.log_path))
+                self._log_platform_info()
 
             if pid and not self._win_capture:
                 try:
-                    self._win_capture = WindowCapturePipe(
+                    self._win_capture = make_window_capture(
                         pid=pid,
                         fps=self._cfg.video["fps"],
                         on_focus_change=self._on_game_focus_change,
@@ -310,16 +355,41 @@ class App:
                     self._win_capture.start()
                     self._stream_window_pid   = pid
                     self._stream_window_title = title
-                except Exception:
+                    capture_type = (
+                        "wgc" if type(self._win_capture).__name__ == "WgcCapturePipe"
+                        else "bitblt"
+                    )
+                    self._logger.log(
+                        "video_source",
+                        mode="window_capture",
+                        capture_type=capture_type,
+                        pid=pid,
+                        size=f"{self._win_capture.width}x{self._win_capture.height}",
+                    )
+                except Exception as exc:
+                    self._logger.log("video_source", mode="gdigrab_fallback", reason=str(exc))
                     self._win_capture = None
 
             self._pending_audio_pipe = ""
+            self._pending_audio_sample_rate = 48000
+            self._pending_audio_channels = 2
             if pid and is_process_loopback_supported() and not self._proc_audio:
                 try:
                     self._proc_audio = ProcessAudioCapture(pid=pid)
                     self._proc_audio.start()
                     self._pending_audio_pipe = self._proc_audio.pipe_name
-                except Exception:
+                    self._pending_audio_sample_rate = self._proc_audio.sample_rate
+                    self._pending_audio_channels = self._proc_audio.channels
+                    self._logger.log(
+                        "audio_source", mode="process_loopback", pid=pid,
+                        sample_rate=self._proc_audio.sample_rate,
+                        channels=self._proc_audio.channels,
+                    )
+                except Exception as exc:
+                    self._logger.log(
+                        "audio_source", mode="process_loopback_failed",
+                        pid=pid, error=str(exc),
+                    )
                     self._proc_audio = None
 
             self._launch_capture(title, pid)
