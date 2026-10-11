@@ -1,2 +1,2 @@
 """Application version — single source of truth."""
-__version__ = "1.0.9-dev"
+__version__ = "1.0.10-dev"
