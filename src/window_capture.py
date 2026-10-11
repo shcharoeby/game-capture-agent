@@ -185,9 +185,11 @@ class WindowCapturePipe:
 
             # Focus tracking — always active (used for overlay + optional callback)
             _GetForegroundWindow = ctypes.windll.user32.GetForegroundWindow
-            # Grace period: brief focus losses (e.g. clicking the Record button) are
-            # ignored — overlay and callback only fire after 4 s of continuous absence.
-            _FOCUS_GRACE_SEC = 4.0
+            # Two separate grace periods:
+            #   _CALLBACK_GRACE_SEC — delay before firing on_focus_change(False) / logging
+            #                         (avoids log spam when user briefly clicks Record button)
+            #   Overlay — shown immediately (0 s) so video is never unexplained black
+            _CALLBACK_GRACE_SEC = 4.0
             _focused: bool = True          # optimistic: assume game has focus at start
             _focus_lost_at: float | None = None   # when focus was continuously lost
             _focus_loss_fired: bool = False        # whether on_focus_change(False) fired
@@ -213,11 +215,11 @@ class WindowCapturePipe:
                         # Focus just lost — start grace timer
                         _focus_lost_at = now
                     _focused = False
-                    # Fire callback + show overlay only after grace period
+                    # Fire callback only after grace period (avoid log spam)
                     if (
                         not _focus_loss_fired
                         and _focus_lost_at is not None
-                        and now - _focus_lost_at >= _FOCUS_GRACE_SEC
+                        and now - _focus_lost_at >= _CALLBACK_GRACE_SEC
                     ):
                         _focus_loss_fired = True
                         if self._on_focus_change is not None:
@@ -226,10 +228,11 @@ class WindowCapturePipe:
                             except Exception:
                                 pass
 
+                # Show overlay immediately when game is not focused so the
+                # video is never an unexplained black screen.
                 _show_overlay = (
                     not _focused
                     and _focus_lost_at is not None
-                    and now - _focus_lost_at >= _FOCUS_GRACE_SEC
                 )
                 if _show_overlay:
                     # ── Focus-lost overlay ──────────────────────────────────
